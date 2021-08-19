@@ -1,0 +1,488 @@
+---
+title: ""
+author: "Vincent N'GUESSAN"
+date: "17/02/2021"
+output:
+    rmdformats::robobook:
+    self_contained: no
+    css: style.css
+---
+
+<h3 style="text-align: center;color:orange" markdown="1"> Data Camp </h3>
+
+<h3 style="text-align: left;color:orange" markdown="1"> Plan :</h3>
+> Formalisation du problème <br>
+> Etude des données <br>
+> Modélisation <br>
+> Comparaison de modèles <br>
+> Choix de modèles et test <br>
+> Estimation finale avec toutes les données <br>
+
+# Formalisation du Problème
+
+Il est question dans cet travail d'expliquer la variable **maxO3** de la base de données **ozone** en fonction d'un certain nombre de variables potentiellement explicatives.
+
+Vu que la variable explicative est **quantitative continue**, nous nou servirons des modèles de regression pour l'expliquer.
+
+
+# Etude des données
+```{r Knitr_Global_Options, include=FALSE}
+library(knitr)
+opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE, cache = TRUE, autodep = TRUE, tidy = FALSE)
+```
+
+```{r}
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(Hmisc)
+library(corrplot)
+library(e1071)
+library(glmnet)
+library(gbm)
+library(Metrics)
+library(randomForest)
+library(rmdformats)
+library(mlbench)
+library(MASS)
+```
+
+```{r}
+path="F:/document/IDSI COURS/IDSI/MASTER2/MATZNER-ML/ozone.txt"
+df <- read.table(path,header=T,sep=";",na.strings=".")
+df <- na.omit(df)
+df$date=NULL
+```
+```{r}
+View(df)
+```
+
+**Qualité des données**
+
+```{r}
+str(df)
+```
+```{r}
+var.na <- apply(is.na(df),2,any)
+for (i in names(df)[var.na] )
+  {
+  cat("Variable ",i ,"contient :",100*(apply(is.na(df[i]),1,any) %>% sum())/nrow(df), "% valeurs manquantes","\n")
+  }
+cat("On a au total :",sum(var.na),"Variables contenant des nan soit ", 100*(apply(is.na(df[var.na]),1,any) %>% sum())/nrow(df))
+```
+
+
+**Corrélation**
+
+```{r}
+mcor=cor(df)
+corrplot(mcor, type="upper")
+```
+**Commentaire : ** On peut constater une présence de multicolinéarité entre les variables.
+On voit que les variables de Type **T..** sont fortement corrélées positivement entres elles et ceux de types **Ne..** sont fortement corrélées négativement entre elles. 
+
+Aussi,on peut noter qu'en dehors des variables **T6,T9,Vx et Ne18** toutes les autres variables ont une correlation fortement positive ou négative avec la variable cible **maxO3**.
+
+# Modélisation
+
+- Nous mettrons  en oeuvre les modèles de regression suivants:
+ **regression moindres carrées,randomforest,Ridge,Lasso,elasticnet** .
+
+- Ces modèles seront comparé par validation croisée 5 blocs.
+
+**Métriques**
+
+- Nous utiliserons comme métriques de comparaison de modèles la **RMSE** qui est une métriques pour évaluer la performance des modèles de regression en évaluant à quel point nos prédictions sont proches des valeurs rélles.
+
+## Création de fonctions pour la modélisation de chaque modèle de regression 
+```{r}
+
+prev.lm <- function(df.X,newX){
+  linear <- lm(maxO3 ~.,data=df.X)
+  as.vector(predict(linear,newx = newX,type="response"))
+}
+```
+
+```{r}
+prev.ridge <- function(df.X,df.Y,newX){
+  ridge <- cv.glmnet(df.X,df.Y,alpha=0)
+  as.vector(predict(ridge,newx = newX))
+}
+```
+
+```{r}
+prev.lasso <- function(df.X,df.Y,newX){
+  lasso <- cv.glmnet(df.X,df.Y,alpha=1)
+  as.vector(predict(lasso,newx = newX))
+}
+```
+
+```{r}
+prev.elasticnet <- function(df.X,df.Y,newX){
+  lasso <- cv.glmnet(df.X,df.Y,family="gaussian",alpha=.5,type.measure = "mse")
+  as.vector(predict(lasso,newx = newX,type="response"))
+}
+```
+
+
+```{r}
+ prev.foret <- function(df,newX){
+      foret <- randomForest(maxO3 ~ ., data =df, mtry = 3, 
+                            importance = TRUE, na.action = na.omit) 
+      as.vector(predict(foret,data=newX))
+    }
+```
+
+
+# Choix de modèles et test
+
+## Comparaison des modèles par validation croisée sur les variables initiales
+
+
+
+```{r}
+# Création de la base de données pour les modèles de regularisation
+x_train=model.matrix(maxO3~.-1,data=df) #  matrix
+Y=df$maxO3
+```
+
+**Validation 10 blocs avec la base de données Ozone de base**
+
+```{r}
+set.seed(1234)
+bloc=sample(rep(1:10,length=nrow(df)),replace=TRUE)
+#names(score) <- c("ridge","lasso")
+foret.k=rep(0,10)
+lineaire.k=rep(0,10)
+boosting.k=rep(0,10)
+ridge.k=rep(0,10)
+lasso.k=rep(0,10)
+elasticnet.k=rep(0,10)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- df[!ind.test,]
+  X.test <- df[ind.test,-1]
+  d.train=x_train[!ind.test,]
+  d.test=x_train[ind.test,]
+  Y.train <- Y[!ind.test]
+  Y.test <- Y[ind.test]
+  foret.k[k]=rmse(X.app$maxO3,prev.foret(X.app,X.test))
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+  ridge.k[k]=rmse(Y.test,prev.ridge(d.train,Y.train,d.test))
+  lasso.k[k]=rmse(Y.test,prev.lasso(d.train,Y.train,d.test))
+  elasticnet.k[k]=rmse(Y.test,prev.elasticnet(d.train,Y.train,d.test))
+
+}
+```
+
+```{r}
+metriques_1=data.frame(foret=foret.k,reglineaire=lineaire.k,ridge=ridge.k,lasso.k,elasticnet=elasticnet.k)
+
+metriques_comparaison_1=data.frame(model=colnames(metriques_1) ,metrics_mean=as.vector(apply(metriques_1,2,mean)))
+```
+
+
+```{r}
+ggplot(metriques_comparaison_1,aes(x=model,y=metrics_mean,fill=model))+geom_bar(stat="identity")
+
+```
+
+**Choix de modèles :**
+Le modèle qui l'emporte est la forêt aléatoire car elle nous donne la RMSE la plus petite en validation croisée 10 blocs.
+
+### Diagnostic du modèle retenue
+```{r}
+x <- df[,-1]
+y <- df$maxO3
+bestMtry <- tuneRF(x,y, stepFactor = 1.5, improve = 1e-5, ntree = 500)
+print(bestMtry)
+```
+
+```{r}
+foret <- randomForest(maxO3 ~ ., data =df, mtry = 9, 
+                            importance = TRUE, na.action = na.omit)
+foret
+```
+
+```{r}
+var.importance=data.frame(var=colnames(df)[-1],importance=foret$importanceSD)
+ggplot(var.importance,aes(x=var,y=importance,fill=var))+geom_bar(stat="identity")
+```
+Nous pouvons vérifier ici que toutes les variables de la base de données contribuent à l'explication de **maxO3**.Toutes les variables sont donc importantes pour l'explication de la varible cible **maxO3**.
+
+## Création d'un nouveau jeu de données avec de nouvelles variables(variables^2,variables^3 et variables^4)
+
+**Création de nouvelles variables x2,x3,x4 puis refaire les étapes précédentes**
+
+```{r}
+df1=as.data.frame(df)
+vec=colnames(df)[-1]
+
+  for (i in vec){
+    df1[,paste(i,"2",sep = "_")]=df[,i]^2
+    df1[,paste(i,"3",sep = "_")]=df[,i]^3
+    df1[,paste(i,"4",sep = "_")]=df[,i]^4
+    
+  }
+```
+**Comparaison de modèles sur le nouveau jeu de données en validation croisées 10 blocs**
+
+```{r}
+set.seed(1234)
+x_train=model.matrix(maxO3~.-1,data=df1) # predictor matrix
+Y=df1$maxO3
+bloc=sample(rep(1:10,length=nrow(df)),replace=TRUE)
+foret.k=rep(0,10)
+lineaire.k=rep(0,10)
+ridge.k=rep(0,10)
+lasso.k=rep(0,10)
+elasticnet.k=rep(0,10)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- df1[!ind.test,]
+  X.test <- df1[ind.test,-1]
+  d.train=x_train[!ind.test,]
+  d.test=x_train[ind.test,]
+  Y.train <- Y[!ind.test]
+  Y.test <- Y[ind.test]
+  foret.k[k]=rmse(X.app$maxO3,prev.foret(X.app,X.test))
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+  ridge.k[k]=rmse(Y.test,prev.ridge(d.train,Y.train,d.test))
+  lasso.k[k]=rmse(Y.test,prev.lasso(d.train,Y.train,d.test))
+  elasticnet.k[k]=rmse(Y.test,prev.elasticnet(d.train,Y.train,d.test))
+
+}
+```
+
+```{r}
+metriques_2=data.frame(foret=foret.k,reglineaire=lineaire.k,ridge=ridge.k,lasso=lasso.k,elasticnet=elasticnet.k) 
+
+metriques_comparaison_2=data.frame(model=colnames(metriques_2) ,metrics_mean=as.vector(apply(metriques_2,2,mean)))
+```
+
+
+```{r}
+ggplot(metriques_comparaison_2,aes(x=model,y=metrics_mean,fill=model))+geom_bar(stat="identity")
+
+```
+**Choix de modèles :**
+
+Ici nous pouvons constater clairement que le modèle qui l'emporte avec la plus pétite valeur de la **RMSE** en validation croisée 10 blocs est la **Régression des moindres carrées**.
+
+### Diagnostics du modèle retenue
+
+```{r}
+reg_moindre_carre <- lm(maxO3 ~.,data=df1)
+summary(reg_moindre_carre)
+
+```
+Le modèle de regression des moindres carrées obtenue nous donne une bonne qualité d'ajustement avec un **R-squared = 0.73**.
+De l'analyse du modèle nous pouvons dire que les variables permettant d'expliquer aux la vraibles **maxO3** au seuil **0.05** sont :**T12,T18,Ne12,Vx,maxO3v,T12_2,T12_3,T12_4,T18_2,T18_3,T18_4,Ne12_2,Vx_2,Vx_3,Vx_4,maxO3v_2**
+
+**Interaction entre les variables avec le meilleur modèle**
+
+Le principe ici est de partir avec une base de données contenant une seule variable explicative puis d'ajouter succesviment les autres variables.
+Celà nous permettra de voir s'il y a un groupe de vraibles explicatives qui déteriorent ou améliorent significativement notre modèle.
+
+```{r}
+bloc=sample(rep(1:10,length=nrow(df1)),replace=TRUE)
+vec=colnames(df1)[-1]
+u=c("maxO3")
+v=c()
+metrique=rep(0,length(vec))
+ind=0
+for (i in vec)
+  ind=ind+1
+  {
+  u=c(u,i)
+  v=c(v,i)
+foret.k=rep(0,3)
+lineaire.k=rep(0,3)
+boosting.k=rep(0,3)
+ridge.k=rep(0,3)
+lasso.k=rep(0,3)
+elasticnet.k=rep(0,3)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- df1[!ind.test,]
+  X.test <- df1[ind.test,-1]
+  
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+
+}  
+metrique[ind]=mean(lineaire.k)
+
+  }
+colnames(df1)[which.max(metrique)]
+```
+En faisant l'interaction entre les variables pour le meilleur modèle, nous pouvons voir que  la variable **maxO3v_3** dégrade les performance de notre modèle.
+
+
+
+## B-splines et comparaison de modeles de regressions
+
+Nous allons maintenant évaluer,comparer nos modèles en utilsant les splines de regression.
+L'objectif est de construire une matrice ayant comme variables les splines de regression, ses varibles seront utilisées comme entrée de nos modèles . 
+
+```{r}
+ozone=as.data.frame(df)
+ozone$date=NULL
+dfSimple <- ozone
+Xozone <- model.matrix(maxO3~.,data=ozone)[,-1]
+dfpoly <- data.frame(maxO3=ozone$maxO3,Xozone,Xozone^2,Xozone^3)
+dfinter <- data.frame(maxO3=ozone$maxO3,model.matrix(maxO3~.^2,data=ozone)[,-1])
+###pour les splines
+library(splines)
+BB <- NULL
+for(i in 1:ncol(Xozone)){
+  var <- Xozone[,i]
+  BX <- bs(var,knots=quantile(var,prob=c(.25,.5,.75)),degre=3,
+           Boundary.knots=c(min(var),max(var)))
+  colnames(BX) <- paste(colnames(Xozone)[i],"-b",1:6,sep="")
+  BB <- cbind(BB,BX)
+}
+dfspline <- data.frame(maxO3=ozone$maxO3,BB)
+```
+
+**Comparaison de modèles sur la base de données des splines de regression par validation 10 blocs**
+
+```{r}
+set.seed(1234)
+x_train=model.matrix(maxO3~.-1,data=dfspline) # predictor matrix
+Y=dfspline $maxO3
+bloc=sample(rep(1:10,length=nrow(dfspline)),replace=TRUE)
+foret.k=rep(0,10)
+lineaire.k=rep(0,10)
+ridge.k=rep(0,10)
+lasso.k=rep(0,10)
+elasticnet.k=rep(0,10)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- dfspline [!ind.test,]
+  X.test <- dfspline [ind.test,-1]
+  d.train=x_train[!ind.test,]
+  d.test=x_train[ind.test,]
+  Y.train <- Y[!ind.test]
+  Y.test <- Y[ind.test]
+  foret.k[k]=rmse(X.app$maxO3,prev.foret(X.app,X.test))
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+  ridge.k[k]=rmse(Y.test,prev.ridge(d.train,Y.train,d.test))
+  lasso.k[k]=rmse(Y.test,prev.lasso(d.train,Y.train,d.test))
+  elasticnet.k[k]=rmse(Y.test,prev.elasticnet(d.train,Y.train,d.test))
+
+}
+```
+
+```{r}
+metriques_4=data.frame(foret=foret.k,reglineaire=lineaire.k,ridge=ridge.k,lasso=lasso.k,elasticnet=elasticnet.k) 
+
+metriques_comparaison_4=data.frame(model=colnames(metriques_2) ,metrics_mean=as.vector(apply(metriques_2,2,mean)))
+```
+
+
+```{r}
+ggplot(metriques_comparaison_4,aes(x=model,y=metrics_mean,fill=model))+geom_bar(stat="identity")
+
+```
+**Choix de modèles :**
+
+On peut constater que le modèle permettant d'avoir de meilleur performance dans l'explication de la variable **maxO3** en utilisant la métrique **RMSE** est le modèle de **Regression des moindres carrées**.
+
+**Diagnostic du modèle retenue**
+
+
+```{r}
+linear_reg=lm(maxO3 ~ ., data =dfspline)
+summary(linear_reg)
+```
+Le modèle de regression lineaire des moindres carrées mis en oeuvre nous permet donne une qualité bonne d'ajustement.
+Du modèle nous pouvons constater que les variables explicatives significatifs (permetant d'expliquer la variable cible) au seuil **0.05** sont:
+
+**maxO3v.b1,maxO3v.b2,maxO3v.b3,maxO3v.b4,maxO3v.b5,maxO3v.b6,Vx.b4,Ne12.b6,Ne12.b1,T12.b5**
+
+
+**Interaction entre les variables avec le meilleur modèle**
+```{r}
+bloc=sample(rep(1:10,length=nrow(dfspline)),replace=TRUE)
+vec=colnames(dfspline)[-1]
+u=c("maxO3")
+v=c()
+metrique=rep(0,length(vec))
+ind=0
+for (i in vec)
+  ind=ind+1
+  {
+  u=c(u,i)
+  v=c(v,i)
+foret.k=rep(0,3)
+lineaire.k=rep(0,3)
+boosting.k=rep(0,3)
+ridge.k=rep(0,3)
+lasso.k=rep(0,3)
+elasticnet.k=rep(0,3)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- dfspline[!ind.test,]
+  X.test <- dfspline[ind.test,-1]
+  
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+
+}  
+metrique[ind]=mean(lineaire.k)
+
+}
+colnames(dfspline)[which.max(metrique)]
+
+```
+En faisant l'interaction entre les variables pour le meilleur modèle, nous pouvons voir que  la variable **maxO3v.b5** dégrade les performance de notre modèle. . 
+
+
+## Comparaison des meilleures modèles obtenues sur chaque base de données
+
+```{r}
+best.db=c(0,3)
+best.db[1]=mean(metriques_1$foret)
+
+df1_new=df1[,-48]
+bloc=sample(rep(1:10,length=nrow(df1_new),replace=TRUE))
+best.db2=rep(0,10)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- df1_new[!ind.test,]
+  X.test <- df1_new[ind.test,-1]
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+
+
+  best.db2[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+}
+best.db[2]=mean(best.db2)
+
+dfspline_new=dfspline[,-72]
+bloc=sample(rep(1:10,length=nrow(dfspline_new)),replace=TRUE)
+best.db3=rep(0,10)
+for (k in 1:10){
+  ind.test <- bloc==k
+  X.app <- dfspline_new[!ind.test,]
+  X.test <- dfspline_new[ind.test,-1]
+  lineaire.k[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+
+
+  best.db3[k]=rmse(X.app$maxO3,prev.lm(X.app,X.test))
+}
+
+best.db[3]=mean(best.db3)
+
+```
+```{r}
+best.db=data.frame(base_donnees=c("Var_initial","var_initial_poly","var_splines"),best_RMSE=best.db)
+best.db
+```
+La base de données contenant les variables initiales, polynomiales allant jusqu'a l'ordre 4 et le modèle de **regression des moindres carrées** permettent d'avoir de meilleurs **RMSE** en validation croiséé 10 blocs.
+
+**Conclusion : **
+
+Ce travail nous a permis d'avoir de comprendre la demarche de comparaison et de choix de modèle.
+Notre meilleur modèle fut la regression des moindres carrées obtenues sur la base de données contenant les variables plolynomiales jusqu'a l'ordre 4.
+
+
+
